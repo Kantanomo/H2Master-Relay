@@ -14,6 +14,8 @@ dedicatedGameServers = dict()
 
 # Preset Dedicated Servers
 #dedicatedGameServers[("000.000.000.000",1001)] = (getdatetime.now(),0)
+#This entry allows us to relay the relay server... (good for migrating master hosts / xlive.dll changes).
+dedicatedGameServers[("149.56.81.89",1001)] = (getdatetime.now(),0)
 
 dict_lock = threading.Lock()
 clients = dedicatedGameServers.copy()

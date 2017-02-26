@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #This version caches the lobby data and alters the packet to send valid replies to clients asking. This greatly reduces the load on the master as well as all game lobbies.
-#This version also contains many commands and now allows Client whitelisting control.
+#This version also contains many commands and now allows Client whitelisting and blacklisting control.
 #Active as the relay server since Jan 2017.
 import SocketServer
 import thread
@@ -28,14 +28,15 @@ ip_data = dict()
 clients = dict()
 dict_lock = threading.Lock()
 
-# IP: [Ports], Dedi, Blocked, Release Time, whitelist
+# IP: [Ports], Dedi, Blocked, Release Time, whitelist, blacklist
 #ip_data["127.0.0.1"] = [[1001, 2001], True, False, getdatetime.now(), []]
 IPD_PORTS = 0
 IPD_IS_STATIC_DEDI = 1
 IPD_BLOCKED = 2
 IPD_BLOCKED_RELEASE = 3
 IPD_LOBBY_WHITELIST = 4
-IPD_DICT_LENGTH = 5
+IPD_LOBBY_BLACKLIST = 5
+IPD_DICT_LENGTH = 6
 
 CONST_BEFORE_BEGINNING_OF_TIME = getdatetime.now() - datetime.timedelta(seconds=360)
 CONST_PORT_LIMIT = 50 #Any IP that exceeds this limit gets blocked (Spam/DDoS prevention)
@@ -53,7 +54,7 @@ def get_dict_lock_on_call(func, *args):
 
 def ensure_ip_data_exists_valid(ip_data, ip_addr, deep_check=False):
 	if ip_data.get(ip_addr, None) == None or not type(ip_data[ip_addr]) == type([]) or len(ip_data[ip_addr]) <= 0:
-		ip_data[ip_addr] = [[], False, False, CONST_BEFORE_BEGINNING_OF_TIME, []]
+		ip_data[ip_addr] = [[], False, False, CONST_BEFORE_BEGINNING_OF_TIME, [], []]
 		return False
 	if not deep_check and len(ip_data[ip_addr]) == IPD_DICT_LENGTH:
 		return True
@@ -63,6 +64,7 @@ def ensure_ip_data_exists_valid(ip_data, ip_addr, deep_check=False):
 	isBlocked = False
 	blockedRelease = getdatetime.now() + datetime.timedelta(days=CONST_BLOCKED_LENGTH[0], hours=CONST_BLOCKED_LENGTH[1], minutes=CONST_BLOCKED_LENGTH[2] + 1)
 	lobbyWhitelist = []
+	lobbyBlacklist = []
 	if ip_addr_len >= 1 and type(ip_data[ip_addr][IPD_PORTS]) == type([]):
 		ports = ip_data[ip_addr][IPD_PORTS]
 	if ip_addr_len >= 2 and type(ip_data[ip_addr][IPD_IS_STATIC_DEDI]) == type(True):
@@ -75,7 +77,9 @@ def ensure_ip_data_exists_valid(ip_data, ip_addr, deep_check=False):
 		blockedRelease = datetime.datetime.strptime(ip_data[ip_addr][IPD_BLOCKED_RELEASE], "%Y-%m-%d %H:%M:%S.%f")
 	if ip_addr_len >= 5:
 		lobbyWhitelist = ip_data[ip_addr][IPD_LOBBY_WHITELIST]
-	ip_data[ip_addr] = [ports, isDedi, isBlocked, blockedRelease, lobbyWhitelist]
+	if ip_addr_len >= 6:
+		lobbyBlacklist = ip_data[ip_addr][IPD_LOBBY_BLACKLIST]
+	ip_data[ip_addr] = [ports, isDedi, isBlocked, blockedRelease, lobbyWhitelist, lobbyBlacklist]
 	return True
 
 def add_port_to_ip_data(ip_data, client):
@@ -153,14 +157,23 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 			elif pkt_data[0].encode('hex') == "05": # Game lobby search
 				pass
 			elif pkt_data[0].encode('hex') == "00" and len(pkt_data) >= 3 and pkt_data[1].encode('hex') == "43": # Client Commands
-				if pkt_data[2].encode('hex') != "01":
+				if pkt_data[2].encode('hex') not in ["01", "02"]:
 					s.sendto("Unsupported Version!", (client[0],client[1]) )
 					return
 				if len(pkt_data) > 3:
 					command = pkt_data[3:]
-					log("[Client CMD]: %s." % command)
+					log("[Client CMD](%s:%d): %s." % (client[0], client[1], command))
 					cmdParts = command.split()
 					if len(cmdParts) > 0 and cmdParts[0] != "":
+						if cmdParts[0].lower() == "push":
+							if len(cmdParts) >= 2:
+								if cmdParts[1].lower() == "dedilobby" and len(cmdParts) == 3 and is_valid_port(cmdParts[2]):
+									ensure_ip_data_exists_valid(ip_data, client[0], True)
+									add_port_to_ip_data(ip_data, (client[0], int(cmdParts[2])))
+									if (client[0], int(cmdParts[2])) not in clients:
+										clients[(client[0], int(cmdParts[2]))] = [getdatetime.now(), 0, False, None, 0, CONST_BEFORE_BEGINNING_OF_TIME]
+									s.sendto("Push Successful.", (client[0],client[1]) )
+									return
 						if cmdParts[0].lower() == "add":
 							if len(cmdParts) >= 2:
 								if cmdParts[1].lower() == "lobby_whitelist" and len(cmdParts) == 3 and is_valid_ip(cmdParts[2]):
@@ -169,17 +182,34 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 										ip_data[client[0]][IPD_LOBBY_WHITELIST].append(cmdParts[2])
 									s.sendto("Lobby Whitelist Addition Successful.", (client[0],client[1]) )
 									return
+								elif cmdParts[1].lower() == "lobby_blacklist" and len(cmdParts) == 3 and is_valid_ip(cmdParts[2]):
+									ensure_ip_data_exists_valid(ip_data, client[0], True)
+									if cmdParts[2] not in ip_data[client[0]][IPD_LOBBY_BLACKLIST]:
+										ip_data[client[0]][IPD_LOBBY_BLACKLIST].append(cmdParts[2])
+									s.sendto("Lobby Blacklist Addition Successful.", (client[0],client[1]) )
+									return
 						elif cmdParts[0].lower() == "show":
 							if len(cmdParts) >= 2:
 								if cmdParts[1].lower() == "lobby_whitelist":
 									ensure_ip_data_exists_valid(ip_data, client[0], True)
 									build_reply = ""
 									for ip_addr in ip_data[client[0]][IPD_LOBBY_WHITELIST]:
-										build_reply = ", " + str(build_reply) + ip_addr
-									if len(build_reply) > 2:
-										build_reply = "Whitelisted IPs: %s." % build_reply[2:]
+										build_reply = str(build_reply) + ",  " + ip_addr
+									if len(build_reply) > 3:
+										build_reply = "Whitelisted IPs: %s." % build_reply[3:]
 									else:
 										build_reply = "There are no Whitelisted IPs."
+									s.sendto(build_reply, (client[0],client[1]) )
+									return
+								elif cmdParts[1].lower() == "lobby_blacklist":
+									ensure_ip_data_exists_valid(ip_data, client[0], True)
+									build_reply = ""
+									for ip_addr in ip_data[client[0]][IPD_LOBBY_BLACKLIST]:
+										build_reply = str(build_reply) + ",  " + ip_addr
+									if len(build_reply) > 3:
+										build_reply = "Blacklisted IPs: %s." % build_reply[3:]
+									else:
+										build_reply = "There are no Blacklisted IPs."
 									s.sendto(build_reply, (client[0],client[1]) )
 									return
 						elif cmdParts[0].lower() == "remove":
@@ -190,6 +220,12 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 										ip_data[client[0]][IPD_LOBBY_WHITELIST].remove(cmdParts[2])
 									s.sendto("Lobby Whitelist Removal Successful.", (client[0],client[1]) )
 									return
+								elif cmdParts[1].lower() == "lobby_blacklist" and len(cmdParts) == 3 and is_valid_ip(cmdParts[2]):
+									ensure_ip_data_exists_valid(ip_data, client[0], True)
+									if cmdParts[2] in ip_data[client[0]][IPD_LOBBY_BLACKLIST]:
+										ip_data[client[0]][IPD_LOBBY_BLACKLIST].remove(cmdParts[2])
+									s.sendto("Lobby Blacklist Removal Successful.", (client[0],client[1]) )
+									return
 						elif cmdParts[0].lower() == "clear":
 							if len(cmdParts) >= 2:
 								if cmdParts[1].lower() == "lobby_whitelist":
@@ -197,7 +233,13 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 									ip_data[client[0]][IPD_LOBBY_WHITELIST] = []
 									s.sendto("Lobby Whitelist Successfully Cleared.", (client[0],client[1]) )
 									return
+								elif cmdParts[1].lower() == "lobby_blacklist":
+									ensure_ip_data_exists_valid(ip_data, client[0], True)
+									ip_data[client[0]][IPD_LOBBY_BLACKLIST] = []
+									s.sendto("Lobby Blacklist Successfully Cleared.", (client[0],client[1]) )
+									return
 				s.sendto("CMD FAILED!", (client[0],client[1]) )
+				log("[Client CMD FAILED](%s:%d)." % (client[0], client[1]))
 				return
 			else:
 				pass
@@ -245,6 +287,9 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 						
 						if len(ip_data[dest[0]][IPD_LOBBY_WHITELIST]) > 0:
 							if client[0] not in ip_data[dest[0]][IPD_LOBBY_WHITELIST]:
+								continue
+						if len(ip_data[dest[0]][IPD_LOBBY_BLACKLIST]) > 0:
+							if client[0] in ip_data[dest[0]][IPD_LOBBY_BLACKLIST]:
 								continue
 						
 						if getdatetime.now() - clients[dest][CLT_LAST_COMM] < datetime.timedelta(seconds=CONST_REQ_FREQ*1.4):
@@ -405,6 +450,16 @@ def clear_all_dict():
 		add_dedi_servers(ip_data)
 		log("Cleared client and ip_data dict.")
 
+def is_valid_port(port):
+	if type(port) == type("") and len(port) > 0:
+		for part in port:
+			if not part.isdigit():
+				return False
+		if int(port) <= 0 or int(port) > 65535:
+			return False
+		return True
+	return False
+		
 def is_valid_ip(ip):
 	if type(ip) == type(""):
 		ip_parts = ip.split(".")
@@ -434,10 +489,10 @@ def knownCommands():
 	\nsave,\
 	\nload,\
 	\nloadold,\
-	\nadd [blocked [ip] (d:h:m) / lobby_whitelist [lobby_ip] [ip]],\
-	\nshow [blocked / lobby_whitelist [lobby_ip]],\
-	\nremove [blocked [ip] / lobby_whitelist [lobby_ip] [ip]],\
-	\nclear [all / client / dedicated / blocked / lobby_whitelist [lobby_ip]],\
+	\nadd [blocked [ip] (d:h:m) / [lobby_whitelist/lobby_blacklist] [lobby_ip] [ip]],\
+	\nshow [blocked / [lobby_whitelist/lobby_blacklist] [lobby_ip]],\
+	\nremove [blocked [ip] / [lobby_whitelist/lobby_blacklist] [lobby_ip] [ip]],\
+	\nclear [all / client / dedicated / blocked / [lobby_whitelist/lobby_blacklist] [lobby_ip]],\
 	\nloglevel [level_num].")
 
 if __name__ == "__main__":
@@ -485,10 +540,18 @@ if __name__ == "__main__":
 					elif cmd[1].lower() == "lobby_whitelist" and len(cmd) == 4 and is_valid_ip(cmd[2]) and is_valid_ip(cmd[3]):
 						with dict_lock:
 							if cmd[2] not in ip_data.keys():
-								log("That IP is not present in memory.")
-								continue
+								log("That IP is not present in memory. Creating...")
+								ensure_ip_data_exists_valid(ip_data, cmd[2])
 							if cmd[3] not in ip_data[cmd[2]][IPD_LOBBY_WHITELIST]:
 								ip_data[cmd[2]][IPD_LOBBY_WHITELIST].append(cmd[3])
+							continue
+					elif cmd[1].lower() == "lobby_blacklist" and len(cmd) == 4 and is_valid_ip(cmd[2]) and is_valid_ip(cmd[3]):
+						with dict_lock:
+							if cmd[2] not in ip_data.keys():
+								log("That IP is not present in memory. Creating...")
+								ensure_ip_data_exists_valid(ip_data, cmd[2])
+							if cmd[3] not in ip_data[cmd[2]][IPD_LOBBY_BLACKLIST]:
+								ip_data[cmd[2]][IPD_LOBBY_BLACKLIST].append(cmd[3])
 							continue
 			elif cmd[0] == "show":
 				if len(cmd) >= 2:
@@ -497,24 +560,37 @@ if __name__ == "__main__":
 						with dict_lock:
 							for ip_addr in ip_data.keys():
 								if ip_data[ip_addr][IPD_BLOCKED]:
-									build_blocked = ", " + str(build_blocked) + ip_addr
-						if len(build_blocked) > 2:
-							log("Blocked IPs: %s." % build_blocked[2:])
+									build_blocked = str(build_blocked) + ",  " + ip_addr
+						if len(build_blocked) > 3:
+							log("Blocked IPs: %s." % build_blocked[3:])
 						else:
 							log("There are no Blocked IPs.")
 						continue
-					if cmd[1].lower() == "lobby_whitelist" and len(cmd) == 3 and is_valid_ip(cmd[2]):
+					elif cmd[1].lower() == "lobby_whitelist" and len(cmd) == 3 and is_valid_ip(cmd[2]):
 						with dict_lock:
 							if cmd[2] not in ip_data.keys():
 								log("That IP is not present in memory.")
 								continue
 							build_blocked = ""
 							for ip_addr in ip_data[cmd[2]][IPD_LOBBY_WHITELIST]:
-								build_blocked = ", " + str(build_blocked) + ip_addr
-							if len(build_blocked) > 2:
-								log("Whitelisted IPs: %s." % build_blocked[2:])
+								build_blocked = str(build_blocked) + ",  " + ip_addr
+							if len(build_blocked) > 3:
+								log("Whitelisted IPs: %s." % build_blocked[3:])
 							else:
 								log("There are no Whitelisted IPs.")
+							continue
+					elif cmd[1].lower() == "lobby_blacklist" and len(cmd) == 3 and is_valid_ip(cmd[2]):
+						with dict_lock:
+							if cmd[2] not in ip_data.keys():
+								log("That IP is not present in memory.")
+								continue
+							build_blocked = ""
+							for ip_addr in ip_data[cmd[2]][IPD_LOBBY_BLACKLIST]:
+								build_blocked = str(build_blocked) + ",  " + ip_addr
+							if len(build_blocked) > 3:
+								log("Blacklisted IPs: %s." % build_blocked[3:])
+							else:
+								log("There are no Blacklisted IPs.")
 							continue
 			elif cmd[0] == "remove":
 				if len(cmd) >= 2:
@@ -529,6 +605,13 @@ if __name__ == "__main__":
 								continue
 							if cmd[3] in ip_data[cmd[2]][IPD_LOBBY_WHITELIST]:
 								ip_data[cmd[2]][IPD_LOBBY_WHITELIST].remove(cmd[3])
+							continue
+						elif cmd[1].lower() == "lobby_blacklist" and len(cmd) == 4 and is_valid_ip(cmd[2]) and is_valid_ip(cmd[3]):
+							if cmd[2] not in ip_data.keys():
+								log("That IP is not present in memory.")
+								continue
+							if cmd[3] in ip_data[cmd[2]][IPD_LOBBY_BLACKLIST]:
+								ip_data[cmd[2]][IPD_LOBBY_BLACKLIST].remove(cmd[3])
 							continue
 			elif cmd[0] == "clear":
 				if len(cmd) >= 2:
@@ -548,7 +631,16 @@ if __name__ == "__main__":
 									ip_data[ip_addr][IPD_BLOCKED] = False
 							continue
 						elif cmd[1].lower() == "lobby_whitelist" and len(cmd) == 3 and is_valid_ip(cmd[2]):
+							if cmd[2] not in ip_data.keys():
+								log("That IP is not present in memory.")
+								continue
 							ip_data[cmd[2]][IPD_LOBBY_WHITELIST] = []
+							continue
+						elif cmd[1].lower() == "lobby_blacklist" and len(cmd) == 3 and is_valid_ip(cmd[2]):
+							if cmd[2] not in ip_data.keys():
+								log("That IP is not present in memory.")
+								continue
+							ip_data[cmd[2]][IPD_LOBBY_BLACKLIST] = []
 							continue
 			elif cmd[0] == "loglevel":
 				if len(cmd) >= 2:

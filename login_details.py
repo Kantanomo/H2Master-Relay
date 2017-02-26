@@ -4,7 +4,7 @@
 #Security and login codes for h2master.
 
 def login_sql():
-	return {'host':"69.195.136.203", 'port':3306, 'user':"h2master", 'passwd':"KotCwcHvoT7UUk0X", 'db':"H2Cartographer"}
+	return {'host':"69.195.136.203", 'port':3306, 'user':"h2master204", 'passwd':"KotCwcHvoT7UUk0X", 'db':"H2Cartographer"}
 
 def login_api_addr():
 	return "http://69.195.136.203/H2Cartographer/api/new_api.php?launcher=0&token="
