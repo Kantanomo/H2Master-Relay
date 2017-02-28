@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #This version caches the lobby data and alters the packet to send valid replies to clients asking. This greatly reduces the load on the master as well as all game lobbies.
-#This version also contains many commands and now allows Client whitelisting and blacklisting control.
+#This version also contains many commands and now allows Client whitelisting and blacklisting control. Can also insert a fake lobby packet as an announcement.
 #Active as the relay server since Jan 2017.
 import SocketServer
 import thread
@@ -15,6 +15,8 @@ import copy
 import get_local_ip
 import mtils
 from common_sql import load_static_dedi_server_ips
+
+Announcement = "07901404006095330572E53A9304E2DCCADC4A29C05D45AA6C8E2E4C8E0EE428ACAD0C0049010000080000C0D2FB1AE002000000C0C2EAEAEAEAEAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEA4648810D400500C002EE8CCC4C8C0CCC8CCC4C8C0C8C0C8C0C8C0C8C0C8C0C8C0C8C0C0C000000000000000000100600000000000000242A58000040520194018401B40180004C01B0018401E4019401C80180002080030008B61F90010000004200800280020050010000000000000A0000000000000000"
 
 CLT_LAST_COMM = 0
 CLT_ANNOYANCE_FACTOR = 1
@@ -272,6 +274,10 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 					
 					sent_to_string = ""
 					
+					#Announcement_packet_reply = build_valid_packet_reply(pkt_data, Announcement.decode('hex'))
+					#if type(Announcement_packet_reply) != type(0):
+					#	s.sendto(Announcement_packet_reply, (client[0],client[1]) )
+					
 					for dest in clients.keys():
 						if dest == client:
 							continue
@@ -285,14 +291,13 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 							remove_client(ip_data, clients, dest)
 							continue
 						
-						if len(ip_data[dest[0]][IPD_LOBBY_WHITELIST]) > 0:
-							if client[0] not in ip_data[dest[0]][IPD_LOBBY_WHITELIST]:
-								continue
-						if len(ip_data[dest[0]][IPD_LOBBY_BLACKLIST]) > 0:
-							if client[0] in ip_data[dest[0]][IPD_LOBBY_BLACKLIST]:
-								continue
-						
 						if getdatetime.now() - clients[dest][CLT_LAST_COMM] < datetime.timedelta(seconds=CONST_REQ_FREQ*1.4):
+							if len(ip_data[dest[0]][IPD_LOBBY_WHITELIST]) > 0:
+								if client[0] not in ip_data[dest[0]][IPD_LOBBY_WHITELIST]:
+									continue
+							if len(ip_data[dest[0]][IPD_LOBBY_BLACKLIST]) > 0:
+								if client[0] in ip_data[dest[0]][IPD_LOBBY_BLACKLIST]:
+									continue
 							built_packet_reply = build_valid_packet_reply(pkt_data, clients[dest][CLT_LOBBY_DATA])
 							if built_packet_reply == 0:
 								#one of the packets were null
@@ -303,6 +308,10 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 								log_lvl(1, "0x05-Data: %s." % pkt_data.encode('hex'))
 								log_lvl(1, "0x07-Data: %s." % clients[dest][CLT_LOBBY_DATA].encode('hex'))
 							else:
+								if len(ip_data[dest[0]][IPD_LOBBY_WHITELIST]) > 0 and len(built_packet_reply) > 20:
+									if built_packet_reply[19].encode('hex')[1] == "3":
+										built_packet_reply = built_packet_reply[:19].encode('hex') + built_packet_reply[19].encode('hex')[0] + "9" + built_packet_reply[20:].encode('hex')
+										built_packet_reply = built_packet_reply.decode('hex')
 								s.sendto(built_packet_reply, (client[0],client[1]) )
 						
 						#Made it a 3 second delay for the first time you ask for a p2p lobby.
@@ -489,9 +498,10 @@ def knownCommands():
 	\nsave,\
 	\nload,\
 	\nloadold,\
+	\npush dedilobby [ip] [port],\
 	\nadd [blocked [ip] (d:h:m) / [lobby_whitelist/lobby_blacklist] [lobby_ip] [ip]],\
 	\nshow [blocked / [lobby_whitelist/lobby_blacklist] [lobby_ip]],\
-	\nremove [blocked [ip] / [lobby_whitelist/lobby_blacklist] [lobby_ip] [ip]],\
+	\nremove [blocked [ip] / [lobby_whitelist/lobby_blacklist] [lobby_ip] [ip] / lobby [ip] [port]],\
 	\nclear [all / client / dedicated / blocked / [lobby_whitelist/lobby_blacklist] [lobby_ip]],\
 	\nloglevel [level_num].")
 
@@ -528,6 +538,14 @@ if __name__ == "__main__":
 			elif cmd[0] == "load":
 				load_dicts_from_file()
 				continue
+			elif cmd[0] == "push":
+				if len(cmd) >= 2:
+					if cmd[1].lower() == "dedilobby" and len(cmd) == 4 and is_valid_ip(cmd[2]) and is_valid_port(cmd[3]):
+						ensure_ip_data_exists_valid(ip_data, cmd[2], True)
+						add_port_to_ip_data(ip_data, (cmd[2], int(cmd[3])))
+						if (cmd[2], int(cmd[3])) not in clients:
+							clients[(cmd[2], int(cmd[3]))] = [getdatetime.now(), 0, False, None, 0, CONST_BEFORE_BEGINNING_OF_TIME]
+						continue
 			elif cmd[0] == "add":
 				if len(cmd) >= 2:
 					if cmd[1].lower() == "blocked" and (len(cmd) == 3 or len(cmd) == 4) and is_valid_ip(cmd[2]):
@@ -612,6 +630,9 @@ if __name__ == "__main__":
 								continue
 							if cmd[3] in ip_data[cmd[2]][IPD_LOBBY_BLACKLIST]:
 								ip_data[cmd[2]][IPD_LOBBY_BLACKLIST].remove(cmd[3])
+							continue
+						elif cmd[1].lower() == "lobby" and len(cmd) == 4 and is_valid_ip(cmd[2]) and is_valid_port(cmd[3]):
+							remove_client(ip_data, clients, (cmd[2], int(cmd[3])))
 							continue
 			elif cmd[0] == "clear":
 				if len(cmd) >= 2:

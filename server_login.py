@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #Fixed, now using Kantanomo's sql db.
-#Active as the login server since Dec 2016.
+#Active as the login server since Feb 2017.
 import socket
 import SocketServer
 import struct
@@ -59,10 +59,21 @@ def get_id_from_secure(secure):
 def get_secure_from_id(id):
 	return int("%06X00" % id, 16)
 
-def get_id_from_ab_hex(ab_hex):
+def get_id_from_ab_hex(ab_hex):#No longer valid for abEnet
 	return int(ab_hex.decode('hex'))
+def pad_null(text, length):
+	text_len = len(text)
+	pad_len = length - text_len
+	return ("0"*pad_len) + text
 def get_abenet_from_id(id):
-	return pad_hex(str(id).encode('hex'), 12).lower()
+	hex_build = pad_null(hex(id)[2:], 6)
+	hex_build = [hex_build[i:i+2] for i in range(0, len(hex_build), 2)]
+	hex_build.reverse()
+	hex_build = "".join(hex_build)
+	hex_build = "%s%s" % (hex_build, "101300")
+	return hex_build.decode('hex') #raw string format
+	#if id > 10385 or id == 2 or id == 10316 or id == 10381:
+	#return pad_hex(str(id).encode('hex'), 12).lower()
 def get_abonline_from_id(id):
 	return pad_hex(str(id).encode('hex'), 40).lower()
 
@@ -133,8 +144,9 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 			packet.lreply.abOnline = abonline
 			
 			log_lvl(1, "[Log Req] Login Success for id: %d, Player:\"%s\"" % (id, username))
+			#log_lvl(1, "[Log Req] abEnet: %s." % abenet.encode('hex'))
 			log_lvl(2, "[Log Req] Login Token:" + token )
-			log_lvl(2, "[Log Req] secure: %08X, abEnet: %s, abOnline: %s" % (secure, abenet, abonline) )
+			log_lvl(2, "[Log Req] secure: %08X, abEnet: %s, abOnline: %s" % (secure, abenet.encode('hex'), abonline) )
 			log_lvl(2, "[Log Req] xnaddr: %08X, port: %d" % (xn.addr, xn.port) )
 			s.sendto(packet.SerializeToString(), self.client_address)
 			log_lvl(2, "[Log Req]: Sent Success Packet to %s:%d." % self.client_address )
@@ -180,7 +192,7 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 		packet.xreply.abEnet = xn.abenet
 		packet.xreply.abOnline = xn.abonline
 		
-		log_lvl(2, "[xnaddr Req] secure: %08X, abEnet: %s, abOnline: %s" % (msg.secure, xn.abenet, xn.abonline) )
+		log_lvl(2, "[xnaddr Req] secure: %08X, abEnet: %s, abOnline: %s" % (msg.secure, xn.abenet.encode('hex'), xn.abonline) )
 		log_lvl(2, "[xnaddr Req] xnaddr: %08X, port: %d" % (xn.addr, xn.port) )
 		s.sendto(packet.SerializeToString(), self.client_address)
 		log_lvl(2, "[xnaddr Req] Sent response to %s:%d." % self.client_address )
